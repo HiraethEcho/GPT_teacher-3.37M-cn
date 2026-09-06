@@ -354,6 +354,8 @@ def render_pipeline(
             ax.plot([x + w / 2], [5.95], marker="v", color="red", markersize=8)
         x += w + 0.1
     token_note = f"输入切成 {len(tokens)} 个 token（▼ 标记最被盯的字）"
+    if len(tokens) > 12:
+        token_note += "｜色块仅示意前 12 个"
     if "温度" in interventions:
         token_note += "｜注意力温度已生效：对比 T=1 与当前值，看层方块内颜色整体变浅（摊平）或变深（集中）"
     ax.text(0.2, 5.12, token_note, fontsize=8, color="gray")

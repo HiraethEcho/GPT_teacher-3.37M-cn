@@ -620,7 +620,9 @@ with gr.Blocks(
             "调注意力温度，看模型的「想法」（下一个字的预测概率）怎么变。\n"
             "数据全部来自你自己训练的 best.pt 的真实前向，不是示意图。"
         )
-        ins_input = gr.Textbox(label="输入文本", value="什么是注意力机制？", lines=1)
+        # 默认问题选温度敏感度高的 OOD 生题（扫描实测 18.9 vs 熟题 ~4）：
+        # 模型对生题的注意力更犹豫，温度干预的可见变化大，教学效果好
+        ins_input = gr.Textbox(label="输入文本", value="如何学好英语？", lines=1)
         with gr.Row():
             ins_depth = gr.Slider(1, N_LAYER, value=N_LAYER, step=1, label="用到前 N 层", info="例如 2 = 只经过前 2 层")
             ins_skip = gr.Slider(

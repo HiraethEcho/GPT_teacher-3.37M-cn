@@ -11,15 +11,21 @@ import time
 from collections import Counter
 from typing import Any
 
-import gradio as gr
+import matplotlib
 
+matplotlib.use("Agg")
 # gradio_client get_type() crashes when additionalProperties is bool instead of dict
+import gradio as gr
 import gradio_client.utils as _gcu
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
+from matplotlib.figure import Figure
 
 from core.infer import generate, load_model_and_tokenizer
 from core.model import GPT
 from core.tokenizer import TokenizerLike
+from core.visualize import capture_attention_weights
 
 _orig_get_type = _gcu.get_type
 
@@ -224,6 +230,100 @@ def check_consistency(prompt: str, max_tokens: float, repeat_penalty: float) -> 
     return response, model_info
 
 
+def _prepare_attention_input(question: str) -> tuple[list[int], list[str]] | None:
+    """把问题编码成模型输入：与推理同款包装 + 超长截断保护。
+
+    Args:
+        question: 用户输入的文本。
+
+    Returns:
+        (token ids, token 文本标签)；模型未加载或输入为空时返回 None。
+    """
+    if not ensure_model() or not question.strip():
+        return None
+    assert model is not None and tokenizer is not None, "模型未加载"
+    assert tokenizer.bos_id is not None, "分词器缺少 BOS 特殊 token"
+    prefix = [tokenizer.bos_id, *tokenizer.encode("用户:" + question.strip() + "\n助手:", add_special_tokens=False)]
+    prefix = prefix[-model.seq_len :]  # 与 generate 相同的截断策略：保留最近上下文
+    tokens = []
+    for tid in prefix:
+        t = tokenizer.decode([tid])
+        tokens.append(t if t else f"<{tid}>")
+    return prefix, tokens
+
+
+def show_attention(question: str, layer: float, head: float) -> Figure | None:
+    """逐头注意力热力图（Head View）：选定层与注意力头，看它关注了哪些词。
+
+    Args:
+        question: 待可视化的文本。
+        layer: 层编号（1 起，超过层数时取最后一层）。
+        head: 头编号（1 起，0 表示该层各头平均）。
+
+    Returns:
+        matplotlib 热力图；输入无效时返回 None。
+    """
+    prepared = _prepare_attention_input(question)
+    if prepared is None:
+        return None
+    prefix, tokens = prepared
+    assert model is not None, "模型未加载"
+    x = torch.tensor(prefix, dtype=torch.long, device=device).unsqueeze(0)
+    weights_per_layer = capture_attention_weights(model, x)
+
+    li = min(int(layer), len(weights_per_layer)) - 1
+    hi = min(int(head), weights_per_layer[li].shape[0])
+    matrix: np.ndarray[Any, Any] = weights_per_layer[li].mean(axis=0) if hi == 0 else weights_per_layer[li][hi - 1]
+    head_label = "各头平均" if hi == 0 else f"Head {hi}"
+
+    fig, ax = plt.subplots(figsize=(max(8, len(tokens) * 0.6), max(6, len(tokens) * 0.5)))
+    im = ax.imshow(matrix, cmap="Blues", vmin=0)
+    ax.set_xticks(range(len(tokens)))
+    ax.set_yticks(range(len(tokens)))
+    ax.set_xticklabels(tokens, fontsize=7, rotation=90)
+    ax.set_yticklabels(tokens, fontsize=7)
+    ax.set_xlabel("Key（被关注的词）")
+    ax.set_ylabel("Query（主动关注的词）")
+    ax.set_title(f"第 {li + 1} 层 · {head_label} 注意力权重\n输入：{question.strip()}")
+    fig.colorbar(im, ax=ax, label="注意力权重", shrink=0.8)
+    fig.tight_layout()
+    return fig
+
+
+def show_attention_grid(question: str) -> Figure | None:
+    """全模型注意力总览（Model View）：层 x 头网格，一眼看出各头分工。
+
+    Args:
+        question: 待可视化的文本。
+
+    Returns:
+        matplotlib 网格图；输入无效时返回 None。
+    """
+    prepared = _prepare_attention_input(question)
+    if prepared is None:
+        return None
+    prefix, tokens = prepared
+    assert model is not None, "模型未加载"
+    x = torch.tensor(prefix, dtype=torch.long, device=device).unsqueeze(0)
+    weights_per_layer = capture_attention_weights(model, x)
+
+    n_layers = len(weights_per_layer)
+    n_heads = weights_per_layer[0].shape[0]
+    fig, axes = plt.subplots(n_layers, n_heads, figsize=(3 * n_heads, 3 * n_layers), squeeze=False)
+    for li in range(n_layers):
+        for hi in range(n_heads):
+            ax = axes[li][hi]
+            ax.imshow(weights_per_layer[li][hi], cmap="Blues", vmin=0)
+            ax.set_title(f"L{li + 1} · H{hi + 1}", fontsize=9)
+            ax.set_xticks(range(len(tokens)))
+            ax.set_yticks(range(len(tokens)))
+            ax.set_xticklabels(tokens, fontsize=4, rotation=90)
+            ax.set_yticklabels(tokens, fontsize=4)
+    fig.suptitle(f"逐头注意力总览：{n_layers} 层 x {n_heads} 头\n输入：{question.strip()}", fontsize=12)
+    fig.tight_layout()
+    return fig
+
+
 # 快捷问题
 EXAMPLE_QUESTIONS = [
     "什么是注意力机制？",
@@ -311,6 +411,20 @@ with gr.Blocks(
                 )
             model_info_box = gr.Markdown("模型尚未加载，点击「发送」自动加载")
 
+    with gr.Accordion("🔍 模型内部：逐头注意力可视化", open=False):
+        gr.Markdown(
+            "借鉴 BertViz 的 Head View / Model View，数据来自你自己训练的模型——"
+            "看每一层每一个注意力头在处理这句话时关注了哪些词。"
+        )
+        attn_input = gr.Textbox(label="输入文本", value="什么是注意力机制？", lines=1)
+        with gr.Row():
+            attn_layer = gr.Slider(1, 16, value=1, step=1, label="层", info="第 N 层（超过模型层数时自动取最后一层）")
+            attn_head = gr.Slider(0, 16, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
+        with gr.Row():
+            attn_btn = gr.Button("查看注意力", variant="primary")
+            attn_grid_btn = gr.Button("总览：所有层 × 所有头")
+        attn_plot = gr.Plot(label="注意力权重")
+
     gr.Markdown("### 点击试试这些问题")
     with gr.Row():
         for q in EXAMPLE_QUESTIONS[:4]:
@@ -386,6 +500,11 @@ with gr.Blocks(
         [single_input, max_tokens, repeat_penalty],
         [single_output, model_info_box],
     )
+
+    # 逐头注意力可视化
+    attn_btn.click(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
+    attn_input.submit(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
+    attn_grid_btn.click(show_attention_grid, [attn_input], [attn_plot])
 
 
 if __name__ == "__main__":

@@ -87,6 +87,39 @@ uv run python -m core.infer --prompt "RoPE 是什么？" --temperature 0.0
 uv run python -m core.infer --prompt "15 乘以 6 等于多少？" --temperature 0.0
 ```
 
+#### 6. 导出 ONNX（用 Netron 看自己模型的计算图）
+
+```bash
+uv run --with onnx python train/scripts/export_onnx.py
+```
+
+导出 `train/checkpoints/model.onnx` 后，用 [Netron](https://netron.app) 打开（网页拖入即可，
+模型不出本机），可以看到自己训练的模型的完整计算图：Embedding → 4 x (RMSNorm → GQA 注意力 →
+残差 → RMSNorm → SwiGLU → 残差) → RMSNorm → LM Head。
+
+加 onnxruntime 做数值一致性验证（ONNX 前向 vs PyTorch 前向）：
+
+```bash
+uv run --with onnx --with onnxruntime python train/scripts/export_onnx.py
+```
+
+说明：固定输入形状 `[1, seq_len]` 导出，用于计算图查看而非部署；不支持量化 checkpoint。
+
+#### 7. 看模型内部：逐头注意力可视化
+
+Web Demo 的「🔍 模型内部：逐头注意力可视化」面板（借鉴 BertViz 的 Head View / Model View）：
+
+- **查看注意力**：选定层与注意力头，看该头处理这句话时关注了哪些词（热力图）
+- **总览**：所有层 x 所有头的网格图，一眼看出各注意力头的分工差异
+  （例如本模型 L1 呈对角带状、L2 出现聚焦单一 token 的竖直深色列、L3/L4 趋于分散）
+
+数据来自 `train/checkpoints/best.pt` 的真实前向（forward hook 重算每层 softmax(QK^T)），
+不是示意图。生成静态图片用：
+
+```bash
+uv run python -m core.visualize --only real_attention
+```
+
 ## 配置说明
 
 `train/config.yml` 关键参数：

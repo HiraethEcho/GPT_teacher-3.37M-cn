@@ -7,9 +7,16 @@
     uv run python -m core.visualize --only loss      # 只看 loss 曲线解读
 """
 
+from __future__ import annotations
+
 import argparse
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import torch
+
+    from core.model import GPT
 
 try:
     import matplotlib
@@ -296,59 +303,34 @@ def plot_model_structure(save_dir: str = "train/docs") -> None:
     print(f"  模型结构图: {path}")
 
 
-def plot_real_attention(
-    ckpt_path: str = "train/checkpoints/best.pt", prompt: str = "什么是注意力机制？", save_dir: str = "train/docs"
-) -> None:
-    """从训练好的模型中提取真实注意力权重并可视化。
+def capture_attention_weights(model: GPT, token_ids: torch.Tensor) -> list[np.ndarray[Any, Any]]:
+    """提取模型处理一段输入时，每层每个注意力头的真实注意力权重。
 
-    通过 forward hook 临时关闭 Flash Attention，逐层捕获注意力矩阵，
-    输出每层热力图与四层总览图。
+    Flash Attention 不返回中间权重，因此在每层注意力的 forward hook 里用该层的
+    wq/wk 重算一遍 softmax(QK^T)（含 RoPE 与因果掩码，与真实前向一致）；
+    临时关闭 Flash Attention，跑完恢复，对模型无副作用。
 
     Args:
-        ckpt_path: checkpoint 路径，不存在时跳过。
-        prompt: 用于可视化的问题。
-        save_dir: 输出目录。
+        model: 已加载权重的 GPT 模型。
+        token_ids: 输入序列，形状 [1, T] 或 [T]。
+
+    Returns:
+        每层一个 [n_head, T, T] 数组：weights[layer][h][i][j] 为第 h 个头
+        在位置 i 对位置 j 的注意力权重。
     """
     import torch
 
-    from core.model import GPT
     from core.model import rope as apply_rope
-    from core.tokenizer import load_tokenizer
 
-    os.makedirs(save_dir, exist_ok=True)
+    if token_ids.dim() == 1:
+        token_ids = token_ids.unsqueeze(0)
 
-    if not os.path.exists(ckpt_path):
-        print(f"  跳过真实注意力可视化：未找到模型 {ckpt_path}")
-        return
+    captured: list[np.ndarray[Any, Any]] = []
 
-    checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    cfg = checkpoint["cfg"]
-    tok = load_tokenizer(
-        cfg.get("tokenizer", {}).get("type", "byte"),
-        cfg.get("tokenizer", {}).get("path"),
-    )
-    model = GPT(
-        vocab_size=tok.vocab_size,
-        n_layer=cfg["model"]["n_layer"],
-        n_head=cfg["model"]["n_head"],
-        n_embd=cfg["model"]["n_embd"],
-        seq_len=cfg["model"]["seq_len"],
-        dropout=0.0,
-        n_kv_head=cfg["model"].get("n_kv_head"),
-    )
-    model.load_state_dict(checkpoint["model"])
-    model.eval()
-
-    assert tok.bos_id is not None, "分词器缺少 BOS 特殊 token"
-    prefix: list[int] = [tok.bos_id, *tok.encode("用户:" + prompt + "\n助手:", add_special_tokens=False)]
-    x = torch.tensor(prefix, dtype=torch.long).unsqueeze(0)
-
-    captured_weights: list[Any] = []
-
-    def make_hook(layer_idx: int) -> Any:
+    def make_hook() -> Any:
         def hook(module: Any, inputs: Any, output: Any) -> None:
             h = inputs[0]
-            B, T, C = h.shape
+            B, T, _ = h.shape
             q = module.wq(h).view(B, T, module.n_head, module.head_dim)
             k = module.wk(h).view(B, T, module.n_kv_head, module.head_dim)
             q, k = apply_rope(q, k, T, module.head_dim, h.device)
@@ -359,24 +341,57 @@ def plot_real_attention(
             causal = torch.tril(torch.ones(T, T, device=h.device))
             scores = scores.masked_fill(causal == 0, float("-inf"))
             weights = torch.softmax(scores, dim=-1)
-            captured_weights.append(weights[0].detach().numpy())
+            captured.append(weights[0].detach().cpu().numpy())
 
         return hook
 
     handles = []
     original_flash = []
-    for i, block in enumerate(model.blocks):
-        handles.append(block.attn.register_forward_hook(make_hook(i)))
+    for block in model.blocks:
+        handles.append(block.attn.register_forward_hook(make_hook()))
         original_flash.append(block.attn.use_flash)
         block.attn.use_flash = False
+    try:
+        with torch.no_grad():
+            model(token_ids)
+    finally:
+        for h in handles:
+            h.remove()
+        for block, flash in zip(model.blocks, original_flash, strict=False):
+            block.attn.use_flash = flash
+    return captured
 
-    with torch.no_grad():
-        model(x)
 
-    for h in handles:
-        h.remove()
-    for block, flash in zip(model.blocks, original_flash, strict=False):
-        block.attn.use_flash = flash
+def plot_real_attention(
+    ckpt_path: str = "train/checkpoints/best.pt", prompt: str = "什么是注意力机制？", save_dir: str = "train/docs"
+) -> None:
+    """从训练好的模型中提取真实注意力权重并可视化。
+
+    复用 capture_attention_weights 逐层捕获注意力矩阵，
+    输出每层热力图（各头平均）与四层总览图。
+
+    Args:
+        ckpt_path: checkpoint 路径，不存在时跳过。
+        prompt: 用于可视化的问题。
+        save_dir: 输出目录。
+    """
+    import torch
+
+    from core.infer import load_model_and_tokenizer
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    if not os.path.exists(ckpt_path):
+        print(f"  跳过真实注意力可视化：未找到模型 {ckpt_path}")
+        return
+
+    model, tok, _, _ = load_model_and_tokenizer(ckpt_path, device="cpu", use_flash=False)
+
+    assert tok.bos_id is not None, "分词器缺少 BOS 特殊 token"
+    prefix: list[int] = [tok.bos_id, *tok.encode("用户:" + prompt + "\n助手:", add_special_tokens=False)]
+    x = torch.tensor(prefix, dtype=torch.long).unsqueeze(0)
+
+    captured_weights = capture_attention_weights(model, x)
 
     tokens = []
     for tid in prefix:

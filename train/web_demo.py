@@ -628,8 +628,15 @@ with gr.Blocks(
             ins_skip = gr.Slider(
                 0, N_LAYER, value=0, step=1, label="跳过某层", info="0 = 不跳过；试试跳过第 2 层（盯关键词的那层）"
             )
+            # 初始 0.2（锐化端）：打开即最大对比（与 T=1 距离实测 11.4 > 3.0 端的 7.5），
+            # 拖向 3.0 全程每步都有可见变化；0.2-3.0 是边际效果明显区间，两端外饱和
             ins_temp = gr.Slider(
-                0.2, 3.0, value=1.0, step=0.1, label="注意力温度", info="1 = 原样；大于 1 更分散；小于 1 更尖锐"
+                0.2,
+                3.0,
+                value=0.2,
+                step=0.1,
+                label="注意力温度",
+                info="1 = 原样；大于 1 更分散；小于 1 更尖锐；两端接近极限",
             )
         ins_btn = gr.Button("运行透视镜", variant="primary")
         # 不设组件 label：gradio 会把它渲染在容器顶部，与占满画布的 figure 视觉重叠

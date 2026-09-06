@@ -207,7 +207,7 @@ def render_temperature_compare(
     Returns:
         matplotlib Figure。
     """
-    fig = plt.figure(figsize=(20, 6))
+    fig = plt.figure(figsize=(20, 6), dpi=150)
     ax_base = fig.add_axes((0.01, 0.12, 0.29, 0.72))
     ax_cur = fig.add_axes((0.345, 0.12, 0.29, 0.72))
     ax_diff = fig.add_axes((0.70, 0.16, 0.235, 0.62))
@@ -329,7 +329,7 @@ def render_pipeline(
         matplotlib Figure。
     """
     n_layers = len(attn_per_layer)
-    fig = plt.figure(figsize=(16.5, 6.8))
+    fig = plt.figure(figsize=(16.5, 6.8), dpi=150)
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set_xlim(0, 16.5)
     ax.set_ylim(0, 6.8)

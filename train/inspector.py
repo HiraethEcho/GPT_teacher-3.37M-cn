@@ -159,6 +159,57 @@ def find_focus_token(matrix: np.ndarray[Any, Any]) -> tuple[int, float]:
     return focus, float(col_sum[focus])
 
 
+def render_temperature_compare(
+    base: np.ndarray[Any, Any],
+    current: np.ndarray[Any, Any],
+    tokens: list[str],
+    layer_idx: int,
+    temp: float,
+) -> Figure:
+    """渲染温度对照图：原样 / 当前 / 差值 三张热力图并排。
+
+    人眼对并排差异极敏感、对单图渐变几乎无感（实测作者本人都需要外部
+    辅助才能看出渐变），温度干预时用并排对照 + 差值图呈现变化：
+    蓝格=变浅（注意力被摊走），红格=变深（被摊入）。
+
+    Args:
+        base: 温度=1 的各头平均注意力 [T, T]。
+        current: 当前温度的各头平均注意力 [T, T]。
+        tokens: token 文本标签。
+        layer_idx: 展示的层（0 起，取聚焦最明显的中层）。
+        temp: 当前温度值。
+
+    Returns:
+        matplotlib Figure。
+    """
+    fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
+    for ax, matrix, label in zip(
+        axes[:2], (base, current), ("温度 1.0（原样）", f"温度 {temp:.1f}（当前）"), strict=True
+    ):
+        im = ax.imshow(matrix, cmap="Blues", vmin=0, vmax=0.5)
+        ax.set_xticks(range(len(tokens)))
+        ax.set_yticks(range(len(tokens)))
+        ax.set_xticklabels(tokens, fontsize=8, rotation=90)
+        ax.set_yticklabels(tokens, fontsize=8)
+        ax.set_title(f"第 {layer_idx + 1} 层 · 各头平均｜{label}", fontsize=11)
+        fig.colorbar(im, ax=ax, label="注意力权重", shrink=0.8)
+
+    diff = current - base
+    dmax = max(float(np.abs(diff).max()), 0.01)
+    ax_d = axes[2]
+    im_d = ax_d.imshow(diff, cmap="RdBu_r", vmin=-dmax, vmax=dmax)
+    ax_d.set_xticks(range(len(tokens)))
+    ax_d.set_yticks(range(len(tokens)))
+    ax_d.set_xticklabels(tokens, fontsize=8, rotation=90)
+    ax_d.set_yticklabels(tokens, fontsize=8)
+    ax_d.set_title("变化量（当前 − 原样）", fontsize=11)
+    fig.colorbar(im_d, ax=ax_d, label="变浅 ← 0 → 变深", shrink=0.8)
+
+    fig.suptitle("温度把注意力摊平了：蓝格=变浅（被摊走），红格=变深（被摊入）", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    return fig
+
+
 def _barh(ax: Axes, pairs: list[tuple[str, float]], title: str, color: str) -> None:
     """画一组水平概率条，条形末端标数值（接近 0 的标 ≈0，避免视觉上像数据缺失）。"""
     ys = np.arange(len(pairs))[::-1]

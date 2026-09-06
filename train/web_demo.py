@@ -28,7 +28,14 @@ from core.infer import generate, load_model_and_tokenizer
 from core.model import GPT
 from core.tokenizer import TokenizerLike
 from core.visualize import capture_attention_weights
-from train.inspector import encode_question, find_focus_token, render_pipeline, run_intervention, top_tokens
+from train.inspector import (
+    encode_question,
+    find_focus_token,
+    render_pipeline,
+    render_temperature_compare,
+    run_intervention,
+    top_tokens,
+)
 
 _orig_get_type = _gcu.get_type
 
@@ -374,11 +381,11 @@ def show_attention_grid(question: str) -> Figure | None:
     return fig
 
 
-def show_pipeline(question: str, depth: float, skip: float, temp: float) -> Figure | None:
+def show_pipeline(question: str, depth: float, skip: float, temp: float) -> tuple[Figure | None, Figure | None]:
     """管道总览 + 干预实验：调整层的使用方式，看模型「想法」怎么变。
 
     一次回调跑两遍前向：原版 logits（基线）与干预后 logits，
-    注意力缩略图取无干预版本（展示各层本来在干嘛）。
+    注意力缩略图带当前温度重算（调温度时热力图本身变平/变尖）。
 
     Args:
         question: 待透视的文本。
@@ -387,11 +394,12 @@ def show_pipeline(question: str, depth: float, skip: float, temp: float) -> Figu
         temp: 注意力温度（1.0 = 原样）。
 
     Returns:
-        管道总览图；输入无效时返回 None。
+        (管道总览图, 温度对照图)；对照图仅在温度干预时生成（否则 None）；
+        输入无效时两个都是 None。
     """
     prepared = _prepare_attention_input(question)
     if prepared is None:
-        return None
+        return None, None
     prefix, tokens = prepared
     assert model is not None and tokenizer is not None, "模型未加载"
     x = torch.tensor(prefix, dtype=torch.long, device=device).unsqueeze(0)
@@ -419,14 +427,22 @@ def show_pipeline(question: str, depth: float, skip: float, temp: float) -> Figu
         parts.append(f"跳过第 {s} 层")
     if d < n_layer:
         parts.append(f"只用前 {d} 层")
-    if abs(t - 1.0) > 1e-9:
+    temp_active = abs(t - 1.0) > 1e-9
+    if temp_active:
         parts.append(f"注意力温度 {t:.1f}")
     interventions = "、".join(parts)
 
     # 「最被盯的字」取中层（聚焦模式最明显的位置）
     mid = n_layer // 2
     focus = find_focus_token(attn_per_layer[mid])
-    return render_pipeline(tokens, attn_per_layer, baseline, intervened, skipped, interventions, focus)
+    pipeline = render_pipeline(tokens, attn_per_layer, baseline, intervened, skipped, interventions, focus)
+
+    # 温度对照图：并排放 T=1 与当前温度，消灭"单图渐变靠对比记忆"的感知负担
+    compare: Figure | None = None
+    if temp_active:
+        base_attn = [w.mean(axis=0) for w in capture_attention_weights(model, x, attn_temp=1.0)]
+        compare = render_temperature_compare(base_attn[mid], attn_per_layer[mid], tokens, mid, t)
+    return pipeline, compare
 
 
 # 快捷问题
@@ -611,6 +627,8 @@ with gr.Blocks(
         ins_btn = gr.Button("运行透视镜", variant="primary")
         # 不设组件 label：gradio 会把它渲染在容器顶部，与占满画布的 figure 视觉重叠
         ins_plot = gr.Plot()
+        # 温度对照图：仅在温度干预时出现（左=原样 右=当前，并排对比）
+        ins_compare_plot = gr.Plot()
         # 平铺不折叠：gradio 4.25 的 Accordion 内 Plot 更新会触发整组重挂载、
         # open 状态丢失（点按钮后折叠区自己合上），教学页长一点无妨
         gr.Markdown(
@@ -625,10 +643,11 @@ with gr.Blocks(
         attn_plot = gr.Plot()
 
         # 透视镜：按钮 / 回车 / 干预滑条联动（拖动即时重跑）
-        ins_btn.click(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
-        ins_input.submit(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
+        _ins_outputs = [ins_plot, ins_compare_plot]
+        ins_btn.click(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], _ins_outputs)
+        ins_input.submit(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], _ins_outputs)
         for _ctl in (ins_depth, ins_skip, ins_temp):
-            _ctl.change(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
+            _ctl.change(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], _ins_outputs)
 
         # 逐头细节：滑条拖动即时重画，无需再点按钮
         attn_btn.click(show_attention, [ins_input, attn_layer, attn_head], [attn_plot])

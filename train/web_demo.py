@@ -174,6 +174,11 @@ def chat(
     repeat_penalty: float,
 ) -> list[Any]:
     """多轮对话回调：拼接历史后生成回答。"""
+    if not message.strip():
+        # 空输入兜底（按钮已联动禁用，但回车路径拦不住）：不产生空白轮次
+        gr.Warning("请先输入问题")
+        return history or []
+
     if not ensure_model():
         history = history or []
         history.append(
@@ -200,6 +205,9 @@ def chat_simple(
     prompt: str, temperature: float, top_k: float, top_p: float, max_tokens: float, repeat_penalty: float
 ) -> tuple[str, str]:
     """单轮问答模式，用于旧版按钮兼容。"""
+    if not prompt.strip():
+        return "（请先输入问题）", ""
+
     if not ensure_model():
         return "错误：未找到模型文件 train/checkpoints/best.pt，请先运行训练。", ""
 
@@ -478,13 +486,15 @@ with gr.Blocks(
         with gr.Row():
             with gr.Column(scale=3):
                 chatbot = gr.Chatbot(label="对话", height=400)
+                # 预置示例问题：打开即可直接发送，避免空输入点发送产生空白轮次
                 msg_input = gr.Textbox(
                     label="输入消息",
+                    value="什么是注意力机制？",
                     placeholder="输入你想问的问题...",
                     lines=2,
                 )
                 with gr.Row():
-                    send_btn = gr.Button("发送", variant="primary")
+                    send_btn = gr.Button("发送", variant="primary", interactive=True)
                     clear_btn = gr.Button("清空对话")
 
                 with gr.Accordion("单轮模式（含置信度和自洽性检测）", open=False):
@@ -569,6 +579,13 @@ with gr.Blocks(
                     inputs=[],
                     outputs=[model_info_box],
                 ).then(lambda: "", inputs=[], outputs=[msg_input])
+
+        # 输入为空时禁用「发送」（回车路径由 chat 回调判空兜底）
+        msg_input.change(
+            lambda v: gr.update(interactive=bool(v.strip())),
+            inputs=[msg_input],
+            outputs=[send_btn],
+        )
 
         # 多轮对话
         send_btn.click(

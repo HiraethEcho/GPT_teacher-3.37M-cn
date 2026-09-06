@@ -225,8 +225,9 @@ def render_temperature_compare(
     ax_diff.set_yticks(range(len(tokens)))
     ax_diff.set_xticklabels(tokens, fontsize=7, rotation=90)
     ax_diff.set_yticklabels(tokens, fontsize=7)
-    ax_diff.set_title("变化量（当前 − 原样）", fontsize=11)
-    fig.colorbar(im_d, ax=ax_diff, label="变浅 ← 0 → 变深", shrink=0.8)
+    ax_diff.set_title("变化量（当前 − 原样）\n红=变深（被摊入），蓝=变浅（被摊走）", fontsize=10)
+    # 色标不再放竖排中文 label：旋转小字号的竖排中文两轮走查均判不可读
+    fig.colorbar(im_d, ax=ax_diff, shrink=0.8)
 
     fig.suptitle(
         "左中：每个字在盯着谁（线越粗=盯得越紧，两图同尺度）；右：变化量——蓝格=注意力被摊走，红格=被摊入",

@@ -159,6 +159,30 @@ def find_focus_token(matrix: np.ndarray[Any, Any]) -> tuple[int, float]:
     return focus, float(col_sum[focus])
 
 
+def placeholder_figure(hint: str) -> Figure:
+    """生成带提示文字的占位图：替代 gradio Plot 的空态（默认裂图图标看着像故障）。
+
+    Args:
+        hint: 提示文字。
+
+    Returns:
+        matplotlib Figure。
+    """
+    fig, ax = plt.subplots(figsize=(10, 1.8))
+    ax.axis("off")
+    ax.text(
+        0.5,
+        0.5,
+        hint,
+        ha="center",
+        va="center",
+        fontsize=13,
+        color="gray",
+        bbox={"boxstyle": "round,pad=0.5", "facecolor": "whitesmoke"},
+    )
+    return fig
+
+
 def render_temperature_compare(
     base: np.ndarray[Any, Any],
     current: np.ndarray[Any, Any],

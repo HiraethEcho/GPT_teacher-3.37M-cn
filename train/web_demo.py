@@ -31,6 +31,7 @@ from core.visualize import capture_attention_weights
 from train.inspector import (
     encode_question,
     find_focus_token,
+    placeholder_figure,
     render_pipeline,
     render_temperature_compare,
     run_intervention,
@@ -381,7 +382,7 @@ def show_attention_grid(question: str) -> Figure | None:
     return fig
 
 
-def show_pipeline(question: str, depth: float, skip: float, temp: float) -> tuple[Figure | None, Figure | None]:
+def show_pipeline(question: str, depth: float, skip: float, temp: float) -> tuple[Figure, Figure]:
     """管道总览 + 干预实验：调整层的使用方式，看模型「想法」怎么变。
 
     一次回调跑两遍前向：原版 logits（基线）与干预后 logits，
@@ -394,12 +395,13 @@ def show_pipeline(question: str, depth: float, skip: float, temp: float) -> tupl
         temp: 注意力温度（1.0 = 原样）。
 
     Returns:
-        (管道总览图, 温度对照图)；对照图仅在温度干预时生成（否则 None）；
-        输入无效时两个都是 None。
+        (管道总览图, 温度对照图)；对照图仅在温度干预时生成，否则给
+        引导提示图（gradio Plot 空态的裂图图标看着像故障）。
     """
+    temp_hint = "💡 把「注意力温度」拖离 1.0，这里会出现并排对照：每个字在盯着谁（弧线） + 变化量（差值）"
     prepared = _prepare_attention_input(question)
     if prepared is None:
-        return None, None
+        return placeholder_figure("输入文本后点「运行透视镜」"), placeholder_figure(temp_hint)
     prefix, tokens = prepared
     assert model is not None and tokenizer is not None, "模型未加载"
     x = torch.tensor(prefix, dtype=torch.long, device=device).unsqueeze(0)
@@ -437,11 +439,14 @@ def show_pipeline(question: str, depth: float, skip: float, temp: float) -> tupl
     focus = find_focus_token(attn_per_layer[mid])
     pipeline = render_pipeline(tokens, attn_per_layer, baseline, intervened, skipped, interventions, focus)
 
-    # 温度对照图：并排放 T=1 与当前温度，消灭"单图渐变靠对比记忆"的感知负担
-    compare: Figure | None = None
+    # 温度对照图：并排放 T=1 与当前温度，消灭"单图渐变靠对比记忆"的感知负担；
+    # 无温度干预时给引导提示（空态裂图图标看着像故障）
+    compare: Figure
     if temp_active:
         base_attn = [w.mean(axis=0) for w in capture_attention_weights(model, x, attn_temp=1.0)]
         compare = render_temperature_compare(base_attn[mid], attn_per_layer[mid], tokens, mid, t)
+    else:
+        compare = placeholder_figure(temp_hint)
     return pipeline, compare
 
 

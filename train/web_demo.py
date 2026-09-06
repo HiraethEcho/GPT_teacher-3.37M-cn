@@ -21,6 +21,7 @@ import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import yaml
 from matplotlib.figure import Figure
 
 from core.infer import generate, load_model_and_tokenizer
@@ -52,6 +53,25 @@ FALLBACK_ANSWERS = [
 
 
 DEFAULT_CKPT = "train/checkpoints/best.pt"
+
+
+def _read_model_limits() -> tuple[int, int]:
+    """读 config.yml 的层数/头数做滑条上限，避免拖到不存在的层靠 clamp 兜底。
+
+    读不到（无 config.yml / 字段缺失）时退回宽松上限 16，clamp 逻辑仍兜底。
+
+    Returns:
+        (n_layer, n_head)。
+    """
+    try:
+        with open("train/config.yml", encoding="utf-8") as f:
+            cfg: dict[str, Any] = yaml.safe_load(f) or {}
+        return int(cfg["model"]["n_layer"]), int(cfg["model"]["n_head"])
+    except (OSError, KeyError, ValueError, yaml.YAMLError):
+        return 16, 16
+
+
+N_LAYER, N_HEAD = _read_model_limits()
 
 model: GPT | None = None
 tokenizer: TokenizerLike | None = None
@@ -385,7 +405,9 @@ def show_pipeline(question: str, depth: float, skip: float, temp: float) -> Figu
 
     baseline = top_tokens(logits_base, tokenizer)
     intervened = top_tokens(logits_new, tokenizer)
-    attn_per_layer = [w.mean(axis=0) for w in capture_attention_weights(model, x)]
+    # 层内缩略图带温度重算：调温度时热力图本身变平/变尖（肉眼可见），
+    # 而不是只靠右侧概率条的微小变化
+    attn_per_layer = [w.mean(axis=0) for w in capture_attention_weights(model, x, attn_temp=t)]
 
     skipped: set[int] = set()
     if 1 <= s <= n_layer:
@@ -579,24 +601,21 @@ with gr.Blocks(
         )
         ins_input = gr.Textbox(label="输入文本", value="什么是注意力机制？", lines=1)
         with gr.Row():
-            ins_depth = gr.Slider(
-                1, 16, value=16, step=1, label="用到前 N 层", info="例如 2 = 只经过前 2 层（超过模型层数 = 全用）"
-            )
+            ins_depth = gr.Slider(1, N_LAYER, value=N_LAYER, step=1, label="用到前 N 层", info="例如 2 = 只经过前 2 层")
             ins_skip = gr.Slider(
-                0, 16, value=0, step=1, label="跳过某层", info="0 = 不跳过；试试跳过第 2 层（盯关键词的那层）"
+                0, N_LAYER, value=0, step=1, label="跳过某层", info="0 = 不跳过；试试跳过第 2 层（盯关键词的那层）"
             )
             ins_temp = gr.Slider(
                 0.2, 3.0, value=1.0, step=0.1, label="注意力温度", info="1 = 原样；大于 1 更分散；小于 1 更尖锐"
             )
         ins_btn = gr.Button("运行透视镜", variant="primary")
-        ins_plot = gr.Plot(label="管道总览")
+        # 不设组件 label：gradio 会把它渲染在容器顶部，与占满画布的 figure 视觉重叠
+        ins_plot = gr.Plot()
         with gr.Accordion("逐层逐头细节（热力图）", open=False):
             gr.Markdown("先点上面「运行透视镜」，再用下面的滑条逐层逐头看注意力（拖动即时刷新）。")
             with gr.Row():
-                attn_layer = gr.Slider(
-                    1, 16, value=1, step=1, label="层", info="第 N 层（超过模型层数时自动取最后一层）"
-                )
-                attn_head = gr.Slider(0, 16, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
+                attn_layer = gr.Slider(1, N_LAYER, value=1, step=1, label="层", info="第 N 层")
+                attn_head = gr.Slider(0, N_HEAD, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
             with gr.Row():
                 attn_btn = gr.Button("查看注意力", variant="primary")
                 attn_grid_btn = gr.Button("总览：所有层 × 所有头")

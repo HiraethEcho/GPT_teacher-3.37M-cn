@@ -321,7 +321,9 @@ def plot_model_structure(save_dir: str = "train/docs") -> None:
     print(f"  模型结构图: {path}")
 
 
-def capture_attention_weights(model: GPT, token_ids: torch.Tensor) -> list[np.ndarray[Any, Any]]:
+def capture_attention_weights(
+    model: GPT, token_ids: torch.Tensor, attn_temp: float = 1.0
+) -> list[np.ndarray[Any, Any]]:
     """提取模型处理一段输入时，每层每个注意力头的真实注意力权重。
 
     Flash Attention 不返回中间权重，因此在每层注意力的 forward hook 里用该层的
@@ -331,6 +333,8 @@ def capture_attention_weights(model: GPT, token_ids: torch.Tensor) -> list[np.nd
     Args:
         model: 已加载权重的 GPT 模型。
         token_ids: 输入序列，形状 [1, T] 或 [T]。
+        attn_temp: 注意力温度（softmax(score/T)），仅影响本次提取的权重展示，
+            不改模型；>1 更分散，<1 更尖锐。用于干预实验的前后对照。
 
     Returns:
         每层一个 [n_head, T, T] 数组：weights[layer][h][i][j] 为第 h 个头
@@ -355,7 +359,7 @@ def capture_attention_weights(model: GPT, token_ids: torch.Tensor) -> list[np.nd
             k = module._repeat_kv(k)
             q = q.transpose(1, 2)
             k = k.transpose(1, 2)
-            scores = (q @ k.transpose(-2, -1)) * (module.head_dim**-0.5)
+            scores = (q @ k.transpose(-2, -1)) * (module.head_dim**-0.5) / attn_temp
             causal = torch.tril(torch.ones(T, T, device=h.device))
             scores = scores.masked_fill(causal == 0, float("-inf"))
             weights = torch.softmax(scores, dim=-1)

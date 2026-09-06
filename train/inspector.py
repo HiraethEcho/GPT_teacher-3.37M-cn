@@ -198,16 +198,16 @@ def render_pipeline(
         matplotlib Figure。
     """
     n_layers = len(attn_per_layer)
-    fig = plt.figure(figsize=(16.5, 6.5))
+    fig = plt.figure(figsize=(16.5, 6.8))
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set_xlim(0, 16.5)
-    ax.set_ylim(0, 6.5)
+    ax.set_ylim(0, 6.8)
     ax.axis("off")
 
     title = "Transformer 透视镜：数据从左到右流过每一层"
     if interventions:
         title += f"（当前干预：{interventions}）"
-    ax.text(0.2, 6.18, title, fontsize=14, fontweight="bold", va="top")
+    ax.text(0.2, 6.4, title, fontsize=14, fontweight="bold", va="top")
 
     # 顶部：token 色块
     cmap = plt.cm.Set3  # type: ignore[attr-defined]

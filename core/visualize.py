@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import torch
 
     from core.model import GPT
+    from core.tokenizer import TokenizerLike
 
 try:
     import matplotlib
@@ -49,6 +50,39 @@ def display_token(t: str, tid: int | None = None) -> str:
     if not t:
         return f"<{tid}>" if tid is not None else ""
     return t.replace("\n", "↵").replace("\r", "").replace(" ", "·").replace("\t", "⇥")
+
+
+def reassembly_labels(tok: TokenizerLike, ids: list[int]) -> list[str]:
+    """生成 token 显示标签：词表外的 byte 碎片重组显示为「词···」。
+
+    小词表会把词表外的词拆成 byte 级 token，单个碎片解码是非法 UTF-8
+    （显示为 � 黑点）；把连续碎片块合并解码可得完整词。块首显示完整词、
+    其余碎片位用 · 占位——标签数与 token 数严格一致（矩阵轴对齐），
+    读者又能看出"这个词占了 N 个碎片位"。
+
+    Args:
+        tok: 分词器。
+        ids: token id 序列。
+
+    Returns:
+        与 ids 等长的显示标签列表。
+    """
+    raw = [tok.decode([i]) for i in ids]
+    labels: list[str] = []
+    i = 0
+    while i < len(raw):
+        if "�" in raw[i]:
+            j = i
+            while j < len(raw) and "�" in raw[j]:
+                j += 1
+            merged = display_token(tok.decode(ids[i:j])) or "□"
+            labels.append(merged)
+            labels.extend(["·"] * (j - i - 1))
+            i = j
+        else:
+            labels.append(display_token(raw[i], ids[i]))
+            i += 1
+    return labels
 
 
 def plot_causal_mask(seq_len: int = 16, save_dir: str = "train/docs") -> None:

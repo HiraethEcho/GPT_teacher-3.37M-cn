@@ -17,7 +17,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from core.visualize import display_token
+from core.visualize import display_token, reassembly_labels
 
 plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "SimHei", "PingFang SC"]
 plt.rcParams["axes.unicode_minus"] = False
@@ -43,7 +43,7 @@ def encode_question(model: GPT, tok: TokenizerLike, question: str) -> tuple[list
     assert tok.bos_id is not None, "分词器缺少 BOS 特殊 token"
     prefix = [tok.bos_id, *tok.encode("用户:" + question.strip() + "\n助手:", add_special_tokens=False)]
     prefix = prefix[-model.seq_len :]  # 与 generate 相同的截断策略：保留最近上下文
-    tokens = [display_token(tok.decode([tid]), tid) for tid in prefix]
+    tokens = reassembly_labels(tok, prefix)  # byte 碎片重组：词表外的词显示为「词···」
     return prefix, tokens
 
 

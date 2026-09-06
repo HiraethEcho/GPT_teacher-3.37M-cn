@@ -329,7 +329,7 @@ def render_pipeline(
         matplotlib Figure。
     """
     n_layers = len(attn_per_layer)
-    fig = plt.figure(figsize=(16.5, 6.8), dpi=150)
+    fig = plt.figure(figsize=(16.5, 6.8), dpi=200)
     ax = fig.add_axes((0, 0, 1, 1))
     ax.set_xlim(0, 16.5)
     ax.set_ylim(0, 6.8)

@@ -17,6 +17,7 @@ matplotlib.use("Agg")
 # gradio_client get_type() crashes when additionalProperties is bool instead of dict
 import gradio as gr
 import gradio_client.utils as _gcu
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -26,6 +27,7 @@ from core.infer import generate, load_model_and_tokenizer
 from core.model import GPT
 from core.tokenizer import TokenizerLike
 from core.visualize import capture_attention_weights
+from train.inspector import encode_question, find_focus_token, render_pipeline, run_intervention, top_tokens
 
 _orig_get_type = _gcu.get_type
 
@@ -242,14 +244,7 @@ def _prepare_attention_input(question: str) -> tuple[list[int], list[str]] | Non
     if not ensure_model() or not question.strip():
         return None
     assert model is not None and tokenizer is not None, "模型未加载"
-    assert tokenizer.bos_id is not None, "分词器缺少 BOS 特殊 token"
-    prefix = [tokenizer.bos_id, *tokenizer.encode("用户:" + question.strip() + "\n助手:", add_special_tokens=False)]
-    prefix = prefix[-model.seq_len :]  # 与 generate 相同的截断策略：保留最近上下文
-    tokens = []
-    for tid in prefix:
-        t = tokenizer.decode([tid])
-        tokens.append(t if t else f"<{tid}>")
-    return prefix, tokens
+    return encode_question(model, tokenizer, question)
 
 
 def show_attention(question: str, layer: float, head: float) -> Figure | None:
@@ -276,17 +271,41 @@ def show_attention(question: str, layer: float, head: float) -> Figure | None:
     matrix: np.ndarray[Any, Any] = weights_per_layer[li].mean(axis=0) if hi == 0 else weights_per_layer[li][hi - 1]
     head_label = "各头平均" if hi == 0 else f"Head {hi}"
 
-    fig, ax = plt.subplots(figsize=(max(8, len(tokens) * 0.6), max(6, len(tokens) * 0.5)))
+    fig, ax = plt.subplots(figsize=(max(8, len(tokens) * 0.6), max(6.5, len(tokens) * 0.5)))
     im = ax.imshow(matrix, cmap="Blues", vmin=0)
     ax.set_xticks(range(len(tokens)))
     ax.set_yticks(range(len(tokens)))
     ax.set_xticklabels(tokens, fontsize=7, rotation=90)
     ax.set_yticklabels(tokens, fontsize=7)
-    ax.set_xlabel("Key（被关注的词）")
-    ax.set_ylabel("Query（主动关注的词）")
-    ax.set_title(f"第 {li + 1} 层 · {head_label} 注意力权重\n输入：{question.strip()}")
-    fig.colorbar(im, ax=ax, label="注意力权重", shrink=0.8)
-    fig.tight_layout()
+    ax.set_xlabel("被盯的字（Key）")
+    ax.set_ylabel("看的字（Query）")
+
+    # 自动结论：红框标出「最被盯的字」所在列
+    focus, focus_val = find_focus_token(matrix)
+    focus_tok = tokens[focus] if focus < len(tokens) else "?"
+    ax.add_patch(
+        mpatches.Rectangle(
+            (focus - 0.5, -0.5), 1, len(tokens), fill=False, edgecolor="red", linewidth=2, linestyle="--"
+        )
+    )
+    ax.set_title(
+        f"第 {li + 1} 层 · {head_label}：每个字在盯着谁看\n"
+        f"红框：「{focus_tok}」最被盯（总关注度 {focus_val:.1f}）｜输入：{question.strip()}"
+    )
+    fig.colorbar(im, ax=ax, label="颜色越深 = 越被盯着看", shrink=0.8)
+
+    # 三步读图指南
+    fig.subplots_adjust(bottom=0.20)
+    fig.text(
+        0.5,
+        0.015,
+        "怎么看这张图：① 在左边（Y 轴）选一个字 ② 沿这一行往右看 ③ 颜色越深的格子 = 这个字越被盯着看；"
+        "右上角空白 = 只许看过去，不许看未来",
+        ha="center",
+        fontsize=8.5,
+        color="gray",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "whitesmoke"},
+    )
     return fig
 
 
@@ -320,8 +339,72 @@ def show_attention_grid(question: str) -> Figure | None:
             ax.set_xticklabels(tokens, fontsize=4, rotation=90)
             ax.set_yticklabels(tokens, fontsize=4)
     fig.suptitle(f"逐头注意力总览：{n_layers} 层 x {n_heads} 头\n输入：{question.strip()}", fontsize=12)
-    fig.tight_layout()
+    # 模式判读图例：三种典型图案各是什么意思
+    fig.text(
+        0.5,
+        0.005,
+        "图案怎么读：对角线深带 = 只看自己和邻居（浅层管局部顺序）｜竖直深列 = 大家盯着同一个关键词（聚焦）"
+        "｜又浅又散 = 全局混合（深层做整合）",
+        ha="center",
+        fontsize=9,
+        color="gray",
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "whitesmoke"},
+    )
+    fig.subplots_adjust(bottom=0.08)
     return fig
+
+
+def show_pipeline(question: str, depth: float, skip: float, temp: float) -> Figure | None:
+    """管道总览 + 干预实验：调整层的使用方式，看模型「想法」怎么变。
+
+    一次回调跑两遍前向：原版 logits（基线）与干预后 logits，
+    注意力缩略图取无干预版本（展示各层本来在干嘛）。
+
+    Args:
+        question: 待透视的文本。
+        depth: 只用前 N 层（超过层数 = 全用）。
+        skip: 跳过第 N 层（0 = 不跳）。
+        temp: 注意力温度（1.0 = 原样）。
+
+    Returns:
+        管道总览图；输入无效时返回 None。
+    """
+    prepared = _prepare_attention_input(question)
+    if prepared is None:
+        return None
+    prefix, tokens = prepared
+    assert model is not None and tokenizer is not None, "模型未加载"
+    x = torch.tensor(prefix, dtype=torch.long, device=device).unsqueeze(0)
+
+    with torch.no_grad():
+        logits_base, _ = model(x)
+
+    n_layer = len(model.blocks)
+    d, s, t = min(int(depth), n_layer), min(int(skip), n_layer), float(temp)
+    logits_new = run_intervention(model, x, s, d, t)
+
+    baseline = top_tokens(logits_base, tokenizer)
+    intervened = top_tokens(logits_new, tokenizer)
+    attn_per_layer = [w.mean(axis=0) for w in capture_attention_weights(model, x)]
+
+    skipped: set[int] = set()
+    if 1 <= s <= n_layer:
+        skipped.add(s - 1)
+    skipped |= set(range(d, n_layer))
+
+    parts = []
+    if 1 <= s <= n_layer:
+        parts.append(f"跳过第 {s} 层")
+    if d < n_layer:
+        parts.append(f"只用前 {d} 层")
+    if abs(t - 1.0) > 1e-9:
+        parts.append(f"注意力温度 {t:.1f}")
+    interventions = "、".join(parts)
+
+    # 「最被盯的字」取中层（聚焦模式最明显的位置）
+    mid = n_layer // 2
+    focus = find_focus_token(attn_per_layer[mid])
+    return render_pipeline(tokens, attn_per_layer, baseline, intervened, skipped, interventions, focus)
 
 
 # 快捷问题
@@ -342,172 +425,194 @@ with gr.Blocks(
         .example-btn { min-width: 120px; margin: 4px; }
     """,
 ) as demo:
-    gr.Markdown(
-        "# GPT Teacher 教学演示\n"
-        "这是一个 ~3.37M 参数的微型 GPT 模型，展示了 Transformer Decoder-only 架构的推理过程。\n\n"
-        "**快速开始**: 点击下方问题按钮，或在对话框中输入自己的问题，支持多轮连续对话。"
-    )
-
-    with gr.Row():
-        with gr.Column(scale=3):
-            chatbot = gr.Chatbot(label="对话", height=400)
-            msg_input = gr.Textbox(
-                label="输入消息",
-                placeholder="输入你想问的问题...",
-                lines=2,
-            )
-            with gr.Row():
-                send_btn = gr.Button("发送", variant="primary")
-                clear_btn = gr.Button("清空对话")
-
-            with gr.Accordion("单轮模式（含置信度和自洽性检测）", open=False):
-                single_input = gr.Textbox(label="输入问题", placeholder="单轮提问...", lines=2)
-                single_output = gr.Textbox(label="模型回答", lines=4)
-                with gr.Row():
-                    single_btn = gr.Button("提问", variant="primary")
-                    consistency_btn = gr.Button("自洽性检测 (5次采样)")
-
-        with gr.Column(scale=1):
-            temperature = gr.Slider(
-                0.0,
-                1.5,
-                value=0.0,
-                step=0.1,
-                label="Temperature (温度)",
-                info="0=精确复制，1=有创造性",
-            )
-            top_k = gr.Slider(
-                1,
-                100,
-                value=50,
-                step=1,
-                label="Top-K",
-                info="只从概率最高的K个词中选",
-            )
-            top_p = gr.Slider(
-                0.0,
-                1.0,
-                value=0.9,
-                step=0.05,
-                label="Top-P (核采样)",
-                info="累积概率阈值",
-            )
-            with gr.Accordion("高级参数", open=False):
-                max_tokens = gr.Slider(
-                    16,
-                    256,
-                    value=128,
-                    step=16,
-                    label="Max Tokens (最大生成长度)",
-                    info="控制回答的最大长度",
-                )
-                repeat_penalty = gr.Slider(
-                    1.0,
-                    2.0,
-                    value=1.5,
-                    step=0.1,
-                    label="Repetition Penalty (重复惩罚)",
-                    info="防止模型重复说同样的话",
-                )
-            model_info_box = gr.Markdown("模型尚未加载，点击「发送」自动加载")
-
-    with gr.Accordion("🔍 模型内部：逐头注意力可视化", open=False):
+    with gr.Tab("💬 对话演示"):
         gr.Markdown(
-            "借鉴 BertViz 的 Head View / Model View，数据来自你自己训练的模型——"
-            "看每一层每一个注意力头在处理这句话时关注了哪些词。"
+            "# GPT Teacher 教学演示\n"
+            "这是一个 ~3.37M 参数的微型 GPT 模型，展示了 Transformer Decoder-only 架构的推理过程。\n\n"
+            "**快速开始**: 点击下方问题按钮，或在对话框中输入自己的问题，支持多轮连续对话。"
         )
-        attn_input = gr.Textbox(label="输入文本", value="什么是注意力机制？", lines=1)
+
         with gr.Row():
-            attn_layer = gr.Slider(1, 16, value=1, step=1, label="层", info="第 N 层（超过模型层数时自动取最后一层）")
-            attn_head = gr.Slider(0, 16, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
+            with gr.Column(scale=3):
+                chatbot = gr.Chatbot(label="对话", height=400)
+                msg_input = gr.Textbox(
+                    label="输入消息",
+                    placeholder="输入你想问的问题...",
+                    lines=2,
+                )
+                with gr.Row():
+                    send_btn = gr.Button("发送", variant="primary")
+                    clear_btn = gr.Button("清空对话")
+
+                with gr.Accordion("单轮模式（含置信度和自洽性检测）", open=False):
+                    single_input = gr.Textbox(label="输入问题", placeholder="单轮提问...", lines=2)
+                    single_output = gr.Textbox(label="模型回答", lines=4)
+                    with gr.Row():
+                        single_btn = gr.Button("提问", variant="primary")
+                        consistency_btn = gr.Button("自洽性检测 (5次采样)")
+
+            with gr.Column(scale=1):
+                temperature = gr.Slider(
+                    0.0,
+                    1.5,
+                    value=0.0,
+                    step=0.1,
+                    label="Temperature (温度)",
+                    info="0=精确复制，1=有创造性",
+                )
+                top_k = gr.Slider(
+                    1,
+                    100,
+                    value=50,
+                    step=1,
+                    label="Top-K",
+                    info="只从概率最高的K个词中选",
+                )
+                top_p = gr.Slider(
+                    0.0,
+                    1.0,
+                    value=0.9,
+                    step=0.05,
+                    label="Top-P (核采样)",
+                    info="累积概率阈值",
+                )
+                with gr.Accordion("高级参数", open=False):
+                    max_tokens = gr.Slider(
+                        16,
+                        256,
+                        value=128,
+                        step=16,
+                        label="Max Tokens (最大生成长度)",
+                        info="控制回答的最大长度",
+                    )
+                    repeat_penalty = gr.Slider(
+                        1.0,
+                        2.0,
+                        value=1.5,
+                        step=0.1,
+                        label="Repetition Penalty (重复惩罚)",
+                        info="防止模型重复说同样的话",
+                    )
+                model_info_box = gr.Markdown("模型尚未加载，点击「发送」自动加载")
+
+        gr.Markdown("### 点击试试这些问题")
         with gr.Row():
-            attn_btn = gr.Button("查看注意力", variant="primary")
-            attn_grid_btn = gr.Button("总览：所有层 × 所有头")
-        attn_plot = gr.Plot(label="注意力权重")
+            for q in EXAMPLE_QUESTIONS[:4]:
+                gr.Button(q, elem_classes="example-btn").click(
+                    lambda q=q, history=[]: (history + [(q, None)], q),
+                    inputs=[],
+                    outputs=[chatbot, msg_input],
+                ).then(
+                    chat,
+                    [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
+                    [chatbot],
+                ).then(
+                    lambda: ensure_model() and model_info or "模型尚未加载",
+                    inputs=[],
+                    outputs=[model_info_box],
+                ).then(lambda: "", inputs=[], outputs=[msg_input])
+        with gr.Row():
+            for q in EXAMPLE_QUESTIONS[4:]:
+                gr.Button(q, elem_classes="example-btn").click(
+                    lambda q=q, history=[]: (history + [(q, None)], q),
+                    inputs=[],
+                    outputs=[chatbot, msg_input],
+                ).then(
+                    chat,
+                    [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
+                    [chatbot],
+                ).then(
+                    lambda: ensure_model() and model_info or "模型尚未加载",
+                    inputs=[],
+                    outputs=[model_info_box],
+                ).then(lambda: "", inputs=[], outputs=[msg_input])
 
-    gr.Markdown("### 点击试试这些问题")
-    with gr.Row():
-        for q in EXAMPLE_QUESTIONS[:4]:
-            gr.Button(q, elem_classes="example-btn").click(
-                lambda q=q, history=[]: (history + [(q, None)], q),
-                inputs=[],
-                outputs=[chatbot, msg_input],
-            ).then(
-                chat,
-                [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
-                [chatbot],
-            ).then(
-                lambda: ensure_model() and model_info or "模型尚未加载",
-                inputs=[],
-                outputs=[model_info_box],
-            ).then(lambda: "", inputs=[], outputs=[msg_input])
-    with gr.Row():
-        for q in EXAMPLE_QUESTIONS[4:]:
-            gr.Button(q, elem_classes="example-btn").click(
-                lambda q=q, history=[]: (history + [(q, None)], q),
-                inputs=[],
-                outputs=[chatbot, msg_input],
-            ).then(
-                chat,
-                [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
-                [chatbot],
-            ).then(
-                lambda: ensure_model() and model_info or "模型尚未加载",
-                inputs=[],
-                outputs=[model_info_box],
-            ).then(lambda: "", inputs=[], outputs=[msg_input])
+        # 多轮对话
+        send_btn.click(
+            chat,
+            [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
+            [chatbot],
+        ).then(
+            lambda: ensure_model() and model_info or "模型尚未加载",
+            inputs=[],
+            outputs=[model_info_box],
+        ).then(lambda: "", inputs=[], outputs=[msg_input])
 
-    # 多轮对话
-    send_btn.click(
-        chat,
-        [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
-        [chatbot],
-    ).then(
-        lambda: ensure_model() and model_info or "模型尚未加载",
-        inputs=[],
-        outputs=[model_info_box],
-    ).then(lambda: "", inputs=[], outputs=[msg_input])
+        msg_input.submit(
+            chat,
+            [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
+            [chatbot],
+        ).then(
+            lambda: ensure_model() and model_info or "模型尚未加载",
+            inputs=[],
+            outputs=[model_info_box],
+        ).then(lambda: "", inputs=[], outputs=[msg_input])
 
-    msg_input.submit(
-        chat,
-        [msg_input, chatbot, temperature, top_k, top_p, max_tokens, repeat_penalty],
-        [chatbot],
-    ).then(
-        lambda: ensure_model() and model_info or "模型尚未加载",
-        inputs=[],
-        outputs=[model_info_box],
-    ).then(lambda: "", inputs=[], outputs=[msg_input])
+        clear_btn.click(
+            lambda: ([], ""),
+            inputs=[],
+            outputs=[chatbot, msg_input],
+        )
 
-    clear_btn.click(
-        lambda: ([], ""),
-        inputs=[],
-        outputs=[chatbot, msg_input],
-    )
+        # 单轮模式
+        single_btn.click(
+            chat_simple,
+            [single_input, temperature, top_k, top_p, max_tokens, repeat_penalty],
+            [single_output, model_info_box],
+        )
+        single_input.submit(
+            chat_simple,
+            [single_input, temperature, top_k, top_p, max_tokens, repeat_penalty],
+            [single_output, model_info_box],
+        )
+        consistency_btn.click(
+            check_consistency,
+            [single_input, max_tokens, repeat_penalty],
+            [single_output, model_info_box],
+        )
 
-    # 单轮模式
-    single_btn.click(
-        chat_simple,
-        [single_input, temperature, top_k, top_p, max_tokens, repeat_penalty],
-        [single_output, model_info_box],
-    )
-    single_input.submit(
-        chat_simple,
-        [single_input, temperature, top_k, top_p, max_tokens, repeat_penalty],
-        [single_output, model_info_box],
-    )
-    consistency_btn.click(
-        check_consistency,
-        [single_input, max_tokens, repeat_penalty],
-        [single_output, model_info_box],
-    )
+    with gr.Tab("🔍 Transformer 透视镜"):
+        gr.Markdown(
+            "看数据怎么流过模型的每一层，并且**动手干预**——跳过某层、只用到第 N 层、"
+            "调注意力温度，看模型的「想法」（下一个字的预测概率）怎么变。\n"
+            "数据全部来自你自己训练的 best.pt 的真实前向，不是示意图。"
+        )
+        ins_input = gr.Textbox(label="输入文本", value="什么是注意力机制？", lines=1)
+        with gr.Row():
+            ins_depth = gr.Slider(
+                1, 16, value=16, step=1, label="用到前 N 层", info="例如 2 = 只经过前 2 层（超过模型层数 = 全用）"
+            )
+            ins_skip = gr.Slider(
+                0, 16, value=0, step=1, label="跳过某层", info="0 = 不跳过；试试跳过第 2 层（盯关键词的那层）"
+            )
+            ins_temp = gr.Slider(
+                0.2, 3.0, value=1.0, step=0.1, label="注意力温度", info="1 = 原样；大于 1 更分散；小于 1 更尖锐"
+            )
+        ins_btn = gr.Button("运行透视镜", variant="primary")
+        ins_plot = gr.Plot(label="管道总览")
+        with gr.Accordion("逐层逐头细节（热力图）", open=False):
+            gr.Markdown("先点上面「运行透视镜」，再用下面的滑条逐层逐头看注意力（拖动即时刷新）。")
+            with gr.Row():
+                attn_layer = gr.Slider(
+                    1, 16, value=1, step=1, label="层", info="第 N 层（超过模型层数时自动取最后一层）"
+                )
+                attn_head = gr.Slider(0, 16, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
+            with gr.Row():
+                attn_btn = gr.Button("查看注意力", variant="primary")
+                attn_grid_btn = gr.Button("总览：所有层 × 所有头")
+            attn_plot = gr.Plot(label="注意力权重")
 
-    # 逐头注意力可视化（滑条拖动即时重画，无需再点按钮）
-    attn_btn.click(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
-    attn_input.submit(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
-    attn_layer.change(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
-    attn_head.change(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
-    attn_grid_btn.click(show_attention_grid, [attn_input], [attn_plot])
+        # 透视镜：按钮 / 回车 / 干预滑条联动（拖动即时重跑）
+        ins_btn.click(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
+        ins_input.submit(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
+        for _ctl in (ins_depth, ins_skip, ins_temp):
+            _ctl.change(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])
 
+        # 逐头细节：滑条拖动即时重画，无需再点按钮
+        attn_btn.click(show_attention, [ins_input, attn_layer, attn_head], [attn_plot])
+        attn_layer.change(show_attention, [ins_input, attn_layer, attn_head], [attn_plot])
+        attn_head.change(show_attention, [ins_input, attn_layer, attn_head], [attn_plot])
+        attn_grid_btn.click(show_attention_grid, [ins_input], [attn_plot])
 
 if __name__ == "__main__":
     port = 7860
@@ -539,9 +644,17 @@ if __name__ == "__main__":
     print('  （出现 "To create a public link..." 提示说明服务已在运行，')
     print("    那是 gradio 的例行提示，无需任何操作）")
     print("=" * 50 + "\n")
-    demo.queue().launch(
-        server_name=os.environ.get("SERVER_NAME", "127.0.0.1"),
-        server_port=port,
-        show_error=True,
-        share=False,
-    )
+    try:
+        demo.queue().launch(
+            server_name=os.environ.get("SERVER_NAME", "127.0.0.1"),
+            server_port=port,
+            show_error=True,
+            share=False,
+        )
+    except KeyboardInterrupt:
+        # 第一次 Ctrl+C 由 gradio 接住并开始关闭（server 线程 join 最多阻塞数秒）；
+        # 等待期间再按一次会从 launch() 冒出第二次 KeyboardInterrupt，这里接住
+        # 避免把 traceback 甩给用户
+        pass
+    finally:
+        print("\n  Web Demo 已停止。")

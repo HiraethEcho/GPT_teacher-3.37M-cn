@@ -105,16 +105,23 @@ uv run --with onnx --with onnxruntime python train/scripts/export_onnx.py
 
 说明：固定输入形状 `[1, seq_len]` 导出，用于计算图查看而非部署；不支持量化 checkpoint。
 
-#### 7. 看模型内部：逐头注意力可视化
+#### 7. 看模型内部：Transformer 透视镜
 
-Web Demo 的「🔍 模型内部：逐头注意力可视化」面板（借鉴 BertViz 的 Head View / Model View）：
+Web Demo 的「🔍 Transformer 透视镜」Tab（`uv run python -m train.web_demo` 后切换），
+数据全部来自 `best.pt` 的真实前向，不是示意图：
 
-- **查看注意力**：选定层与注意力头，看该头处理这句话时关注了哪些词（热力图）
-- **总览**：所有层 x 所有头的网格图，一眼看出各注意力头的分工差异
-  （例如本模型 L1 呈对角带状、L2 出现聚焦单一 token 的竖直深色列、L3/L4 趋于分散）
+- **管道总览**：token 色块 → Embed → 4 个层方块（内嵌该层注意力缩略图）→ 下一个字的
+  top-5 预测概率；自动标出「最被盯的字」（排除 BOS 的 attention sink）
+- **干预实验**（调值立即看变化）：
+  - **跳过某层**：该层灰显标"已跳过"，输出概率与原版并排对比
+  - **只用前 N 层**：看深度对预测的影响
+  - **注意力温度**：softmax(score/T)，大于 1 更分散、小于 1 更尖锐
+- **逐头细节**：选定层 x 头的注意力热力图（教学版：人话轴标签 + 红框自动结论 +
+  三步读图指南 + 模式图例），滑条拖动即时刷新
 
-数据来自 `train/checkpoints/best.pt` 的真实前向（forward hook 重算每层 softmax(QK^T)），
-不是示意图。生成静态图片用：
+干预通过 forward hook 临时替换模块输出实现（`train/inspector.py`），不改动模型本体。
+
+生成静态注意力图片（各头平均版）用：
 
 ```bash
 uv run python -m core.visualize --only real_attention

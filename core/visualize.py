@@ -33,6 +33,24 @@ plt.rcParams["font.sans-serif"] = ["Arial Unicode MS", "SimHei", "PingFang SC"]
 plt.rcParams["axes.unicode_minus"] = False
 
 
+def display_token(t: str, tid: int | None = None) -> str:
+    """把 token 文本转成可显示的短标签：空白字符换可见符号，空文本回退为 <id>。
+
+    中文字体普遍缺少 U+23CE(⏎)/U+2423(␣) 字形（渲染成空心方框），
+    因此换行用 ↵、空格用 · 这类常见字形表示。
+
+    Args:
+        t: token 解码后的文本。
+        tid: token id，t 为空且提供时用于 <id> 回退标签。
+
+    Returns:
+        可显示的短标签。
+    """
+    if not t:
+        return f"<{tid}>" if tid is not None else ""
+    return t.replace("\n", "↵").replace("\r", "").replace(" ", "·").replace("\t", "⇥")
+
+
 def plot_causal_mask(seq_len: int = 16, save_dir: str = "train/docs") -> None:
     """可视化因果掩码：1 表示能看到，0 表示被遮住。
 

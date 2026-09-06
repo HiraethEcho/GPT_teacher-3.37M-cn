@@ -276,11 +276,12 @@ def _draw_attention_arcs(ax: Axes, matrix: np.ndarray[Any, Any], tokens: list[st
     ax.set_ylim(-0.8, 1.9)
     ax.axis("off")
 
-    # attention sink 注释：首 token 常年吸纳约 1/3 的总被关注度（按本图真实数据现算）
+    # attention sink 注释：先回应"为什么它最粗"的看图疑问，再给机制（按本图真实数据现算份额）
     if n > 1:
         bos_pct = float(matrix[:, 0].sum() / matrix.sum())
         ax.annotate(
-            f"← attention sink：模型把备用注意力\n存在起始符（独占 {bos_pct:.0%} 被关注度）",
+            f"← 为什么它最粗？每个字的注意力必须花满 100%，\n"
+            f"花不掉的都倒给第一个字（学术名 attention sink）——独占 {bos_pct:.0%}",
             xy=(-0.05, 1.3),
             xytext=(1.2, 1.68),
             fontsize=7,

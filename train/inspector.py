@@ -166,11 +166,12 @@ def render_temperature_compare(
     layer_idx: int,
     temp: float,
 ) -> Figure:
-    """渲染温度对照图：原样 / 当前 / 差值 三张热力图并排。
+    """渲染温度对照三联图：弧线(原样) | 弧线(当前) | 差值热力图。
 
-    人眼对并排差异极敏感、对单图渐变几乎无感（实测作者本人都需要外部
-    辅助才能看出渐变），温度干预时用并排对照 + 差值图呈现变化：
-    蓝格=变浅（注意力被摊走），红格=变深（被摊入）。
+    两种表达各有所长（走查实证）：弧线图（BertViz Head View 形态）对
+    "谁看谁"的结构一眼可读，但温度摊平是全局微弱再分配，格局不变、
+    每根线只细一点，弧线看不出；差值热力图把增减编码为红/蓝，全局
+    变化立刻可见。三联合并：左中看结构，右看变化。
 
     Args:
         base: 温度=1 的各头平均注意力 [T, T]。
@@ -182,32 +183,73 @@ def render_temperature_compare(
     Returns:
         matplotlib Figure。
     """
-    fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
+    fig = plt.figure(figsize=(20, 6))
+    ax_base = fig.add_axes((0.01, 0.12, 0.29, 0.72))
+    ax_cur = fig.add_axes((0.345, 0.12, 0.29, 0.72))
+    ax_diff = fig.add_axes((0.70, 0.16, 0.235, 0.62))
+
     for ax, matrix, label in zip(
-        axes[:2], (base, current), ("温度 1.0（原样）", f"温度 {temp:.1f}（当前）"), strict=True
+        (ax_base, ax_cur), (base, current), ("温度 1.0（原样）", f"温度 {temp:.1f}（当前）"), strict=True
     ):
-        im = ax.imshow(matrix, cmap="Blues", vmin=0, vmax=0.5)
-        ax.set_xticks(range(len(tokens)))
-        ax.set_yticks(range(len(tokens)))
-        ax.set_xticklabels(tokens, fontsize=8, rotation=90)
-        ax.set_yticklabels(tokens, fontsize=8)
+        _draw_attention_arcs(ax, matrix, tokens)
         ax.set_title(f"第 {layer_idx + 1} 层 · 各头平均｜{label}", fontsize=11)
-        fig.colorbar(im, ax=ax, label="注意力权重", shrink=0.8)
 
     diff = current - base
     dmax = max(float(np.abs(diff).max()), 0.01)
-    ax_d = axes[2]
-    im_d = ax_d.imshow(diff, cmap="RdBu_r", vmin=-dmax, vmax=dmax)
-    ax_d.set_xticks(range(len(tokens)))
-    ax_d.set_yticks(range(len(tokens)))
-    ax_d.set_xticklabels(tokens, fontsize=8, rotation=90)
-    ax_d.set_yticklabels(tokens, fontsize=8)
-    ax_d.set_title("变化量（当前 − 原样）", fontsize=11)
-    fig.colorbar(im_d, ax=ax_d, label="变浅 ← 0 → 变深", shrink=0.8)
+    im_d = ax_diff.imshow(diff, cmap="RdBu_r", vmin=-dmax, vmax=dmax)
+    ax_diff.set_xticks(range(len(tokens)))
+    ax_diff.set_yticks(range(len(tokens)))
+    ax_diff.set_xticklabels(tokens, fontsize=7, rotation=90)
+    ax_diff.set_yticklabels(tokens, fontsize=7)
+    ax_diff.set_title("变化量（当前 − 原样）", fontsize=11)
+    fig.colorbar(im_d, ax=ax_diff, label="变浅 ← 0 → 变深", shrink=0.8)
 
-    fig.suptitle("温度把注意力摊平了：蓝格=变浅（被摊走），红格=变深（被摊入）", fontsize=13, fontweight="bold")
-    fig.tight_layout()
+    fig.suptitle(
+        "左中：每个字在盯着谁（线越粗=盯得越紧，两图同尺度）；右：变化量——蓝格=注意力被摊走，红格=被摊入",
+        fontsize=13,
+        fontweight="bold",
+    )
     return fig
+
+
+def _draw_attention_arcs(ax: Axes, matrix: np.ndarray[Any, Any], tokens: list[str]) -> None:
+    """在 ax 上画注意力弧线图：上排=看的字(Query)，下排=被盯的字(Key)，连线粗细=权重。
+
+    Args:
+        ax: 目标坐标系。
+        matrix: 各头平均注意力 [T, T]。
+        tokens: token 文本标签。
+    """
+    n = len(tokens)
+    xs = np.arange(n)
+    ax.text(-0.55, 1.16, "看的字→", ha="right", va="bottom", fontsize=8, color="gray")
+    ax.text(-0.55, -0.16, "被盯的字→", ha="right", va="top", fontsize=8, color="gray")
+    for i, t in enumerate(tokens):
+        ax.text(xs[i], 1.16, t, ha="center", va="bottom", fontsize=9)
+        ax.text(xs[i], -0.16, t, ha="center", va="top", fontsize=9)
+    for i in range(n):  # Query（上排，看的字）
+        for j in range(i + 1):  # Key（下排，被盯的字，因果只看过去）
+            w = float(matrix[i, j])
+            if w < 0.04:  # 过滤絮线：弱到看不清的注意力不画，变化时粗线的增减才醒目
+                continue
+            rad = 0.15 + 0.55 * (i - j) / max(n - 1, 1)  # 跨度越大弯得越开，避免长线压住短弧
+            ax.annotate(
+                "",
+                xy=(xs[i], 1.05),
+                xytext=(xs[j], -0.05),
+                arrowprops={
+                    "arrowstyle": "-",
+                    "color": "steelblue",
+                    "alpha": min(1.0, 0.3 + w * 1.6),
+                    "lw": w * 9,
+                    "connectionstyle": f"arc3,rad={rad}",
+                    "shrinkA": 2,
+                    "shrinkB": 2,
+                },
+            )
+    ax.set_xlim(-1.6, n - 0.4)
+    ax.set_ylim(-0.8, 1.9)
+    ax.axis("off")
 
 
 def _barh(ax: Axes, pairs: list[tuple[str, float]], title: str, color: str) -> None:

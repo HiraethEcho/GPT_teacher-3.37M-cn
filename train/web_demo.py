@@ -501,9 +501,11 @@ with gr.Blocks(
         [single_output, model_info_box],
     )
 
-    # 逐头注意力可视化
+    # 逐头注意力可视化（滑条拖动即时重画，无需再点按钮）
     attn_btn.click(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
     attn_input.submit(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
+    attn_layer.change(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
+    attn_head.change(show_attention, [attn_input, attn_layer, attn_head], [attn_plot])
     attn_grid_btn.click(show_attention_grid, [attn_input], [attn_plot])
 
 

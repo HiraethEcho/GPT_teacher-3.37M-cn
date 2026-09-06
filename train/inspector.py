@@ -222,7 +222,10 @@ def render_pipeline(
         if i == focus[0]:
             ax.plot([x + w / 2], [5.95], marker="v", color="red", markersize=8)
         x += w + 0.1
-    ax.text(0.2, 5.12, f"输入切成 {len(tokens)} 个 token（▼ 标记最被盯的字）", fontsize=8, color="gray")
+    token_note = f"输入切成 {len(tokens)} 个 token（▼ 标记最被盯的字）"
+    if "温度" in interventions:
+        token_note += "｜注意力温度已生效：对比 T=1 与当前值，看层方块内颜色整体变浅（摊平）或变深（集中）"
+    ax.text(0.2, 5.12, token_note, fontsize=8, color="gray")
 
     # Embed 条
     emb = mpatches.FancyBboxPatch(
@@ -250,9 +253,11 @@ def render_pipeline(
         ax.text(x0 + 0.9, 4.5, f"第 {li + 1} 层", ha="center", fontsize=10, fontweight="bold")
         if skipped:
             ax.text(x0 + 0.9, 2.0, "已跳过", ha="center", fontsize=10, color="red", fontweight="bold")
-        # 数据坐标 → figure 比例：除以当前画布宽度 16.5（曾因分母停留在旧宽度 15 导致第 4 层缩略图溢出面板）
-        sub = fig.add_axes(((x0 + 0.1) / 16.5, 2.35 / 6.5, 1.6 / 16.5, 1.6 / 6.5))
-        sub.imshow(attn_per_layer[li], cmap="Blues", vmin=0)
+        # 数据坐标 → figure 比例：除以当前画布宽 16.5 / 高 6.8（分母停留在旧尺寸曾致缩略图溢出/错位）
+        sub = fig.add_axes(((x0 + 0.1) / 16.5, 2.35 / 6.8, 1.6 / 16.5, 1.6 / 6.8))
+        # vmax 固定 0.5 而非数据 max：首位置对角恒 1.0（只能看自己的退化位置），
+        # 会把色标上限钉死在 1.0，真实注意力(0~0.45)全被压进白色区，温度变化不可见
+        sub.imshow(attn_per_layer[li], cmap="Blues", vmin=0, vmax=0.5)
         sub.axis("off")
         if li < n_layers - 1:
             ax.annotate(

@@ -611,15 +611,18 @@ with gr.Blocks(
         ins_btn = gr.Button("运行透视镜", variant="primary")
         # 不设组件 label：gradio 会把它渲染在容器顶部，与占满画布的 figure 视觉重叠
         ins_plot = gr.Plot()
-        with gr.Accordion("逐层逐头细节（热力图）", open=False):
-            gr.Markdown("先点上面「运行透视镜」，再用下面的滑条逐层逐头看注意力（拖动即时刷新）。")
-            with gr.Row():
-                attn_layer = gr.Slider(1, N_LAYER, value=1, step=1, label="层", info="第 N 层")
-                attn_head = gr.Slider(0, N_HEAD, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
-            with gr.Row():
-                attn_btn = gr.Button("查看注意力", variant="primary")
-                attn_grid_btn = gr.Button("总览：所有层 × 所有头")
-            attn_plot = gr.Plot(label="注意力权重")
+        # 平铺不折叠：gradio 4.25 的 Accordion 内 Plot 更新会触发整组重挂载、
+        # open 状态丢失（点按钮后折叠区自己合上），教学页长一点无妨
+        gr.Markdown(
+            "### 逐层逐头细节（热力图）\n拖动滑条逐层逐头看注意力（即时刷新）；先点上面「运行透视镜」加载模型。"
+        )
+        with gr.Row():
+            attn_layer = gr.Slider(1, N_LAYER, value=1, step=1, label="层", info="第 N 层")
+            attn_head = gr.Slider(0, N_HEAD, value=0, step=1, label="注意力头", info="0 = 该层各头平均")
+        with gr.Row():
+            attn_btn = gr.Button("查看注意力", variant="primary")
+            attn_grid_btn = gr.Button("总览：所有层 × 所有头")
+        attn_plot = gr.Plot()
 
         # 透视镜：按钮 / 回车 / 干预滑条联动（拖动即时重跑）
         ins_btn.click(show_pipeline, [ins_input, ins_depth, ins_skip, ins_temp], [ins_plot])

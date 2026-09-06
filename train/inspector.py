@@ -160,13 +160,17 @@ def find_focus_token(matrix: np.ndarray[Any, Any]) -> tuple[int, float]:
 
 
 def _barh(ax: Axes, pairs: list[tuple[str, float]], title: str, color: str) -> None:
-    """画一组水平概率条。"""
+    """画一组水平概率条，条形末端标数值（接近 0 的标 ≈0，避免视觉上像数据缺失）。"""
     ys = np.arange(len(pairs))[::-1]
-    ax.barh(ys, [p for _, p in pairs], color=color)
+    probs = [p for _, p in pairs]
+    xmax = max(0.05, max(probs))
+    ax.barh(ys, probs, color=color)
+    for y, p in zip(ys, probs, strict=True):
+        ax.text(p + xmax * 0.02, y, f"{p:.2f}" if p >= 0.005 else "≈0", va="center", fontsize=7)
     ax.set_yticks(ys)
     ax.set_yticklabels([t for t, _ in pairs], fontsize=8)
     ax.set_title(title, fontsize=9)
-    ax.set_xlim(0, max(0.05, max(p for _, p in pairs)))
+    ax.set_xlim(0, xmax)
     ax.tick_params(axis="x", labelsize=7)
 
 
@@ -203,7 +207,7 @@ def render_pipeline(
     title = "Transformer 透视镜：数据从左到右流过每一层"
     if interventions:
         title += f"（当前干预：{interventions}）"
-    ax.text(0.2, 6.25, title, fontsize=14, fontweight="bold", va="top")
+    ax.text(0.2, 6.18, title, fontsize=14, fontweight="bold", va="top")
 
     # 顶部：token 色块
     cmap = plt.cm.Set3  # type: ignore[attr-defined]
@@ -214,7 +218,7 @@ def render_pipeline(
             (x, 5.35), w, 0.5, boxstyle="round,pad=0.04", facecolor=cmap(i % 12), edgecolor="gray", linewidth=0.6
         )
         ax.add_patch(rect)
-        ax.text(x + w / 2, 5.6, t, ha="center", va="center", fontsize=8)
+        ax.text(x + w / 2, 5.6, t, ha="center", va="center", fontsize=9)
         if i == focus[0]:
             ax.plot([x + w / 2], [5.95], marker="v", color="red", markersize=8)
         x += w + 0.1
@@ -246,7 +250,8 @@ def render_pipeline(
         ax.text(x0 + 0.9, 4.5, f"第 {li + 1} 层", ha="center", fontsize=10, fontweight="bold")
         if skipped:
             ax.text(x0 + 0.9, 2.0, "已跳过", ha="center", fontsize=10, color="red", fontweight="bold")
-        sub = fig.add_axes((x0 / 15 + 0.008, 2.35 / 6.5, 1.6 / 15, 1.6 / 6.5))
+        # 数据坐标 → figure 比例：除以当前画布宽度 16.5（曾因分母停留在旧宽度 15 导致第 4 层缩略图溢出面板）
+        sub = fig.add_axes(((x0 + 0.1) / 16.5, 2.35 / 6.5, 1.6 / 16.5, 1.6 / 6.5))
         sub.imshow(attn_per_layer[li], cmap="Blues", vmin=0)
         sub.axis("off")
         if li < n_layers - 1:
@@ -274,7 +279,11 @@ def render_pipeline(
 
     # 自动结论
     focus_tok = tokens[focus[0]] if focus[0] < len(tokens) else "?"
-    conclusion = f"自动发现：「{focus_tok}」是最被盯的字——后面的字都在它身上找线索（总被关注度 {focus[1]:.1f}）。"
+    conclusion = (
+        "读图：每个层方块内的小图 = 该层的注意力热力图（颜色越深 = 越被盯着）；"
+        "「已跳过」层内的小图是它本来会怎么做的对照。\n"
+        f"自动发现：「{focus_tok}」是最被盯的字——后面的字都在它身上找线索（总被关注度 {focus[1]:.1f}）。"
+    )
     if interventions:
         conclusion += (
             f"\n干预（{interventions}）后预测概率重排：对比左右两张条形图，看模型没了这层/变了注意力后「想法」怎么变。"

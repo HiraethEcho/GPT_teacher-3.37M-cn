@@ -276,6 +276,18 @@ def _draw_attention_arcs(ax: Axes, matrix: np.ndarray[Any, Any], tokens: list[st
     ax.set_ylim(-0.8, 1.9)
     ax.axis("off")
 
+    # attention sink 注释：首 token 常年吸纳约 1/3 的总被关注度（按本图真实数据现算）
+    if n > 1:
+        bos_pct = float(matrix[:, 0].sum() / matrix.sum())
+        ax.annotate(
+            f"← attention sink：模型把备用注意力\n存在起始符（独占 {bos_pct:.0%} 被关注度）",
+            xy=(-0.05, 1.3),
+            xytext=(1.2, 1.68),
+            fontsize=7,
+            color="dimgray",
+            arrowprops={"arrowstyle": "->", "color": "dimgray", "lw": 0.8},
+        )
+
 
 def _barh(ax: Axes, pairs: list[tuple[str, float]], title: str, color: str) -> None:
     """画一组水平概率条，条形末端标数值（接近 0 的标 ≈0，避免视觉上像数据缺失）。"""

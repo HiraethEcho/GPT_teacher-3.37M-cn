@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpt-teacher"
-version = "1.0.0"
+version = "3.1.0"
 description = "A small-scale GPT model for teaching and demonstration"
 authors = [
     {name = "GPT Teacher Team", email = "contact@gpt-teacher.ai"},

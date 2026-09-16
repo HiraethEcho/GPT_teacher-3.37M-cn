@@ -77,7 +77,8 @@ uv run python -m core.evaluate
 uv run python -m train.web_demo
 ```
 
-打开 http://127.0.0.1:7860 ，可以调节 Temperature / Top-K / Top-P 观察模型输出变化。
+打开 http://127.0.0.1:7860 ，「💬 对话演示」Tab 支持多轮对话（自动拼接历史），
+可调节 Temperature / Top-K / Top-P 观察模型输出变化，输入框自带预置教学问题。
 
 #### 5. 命令行推理
 
@@ -115,7 +116,9 @@ Web Demo 的「🔍 Transformer 透视镜」Tab（`uv run python -m train.web_de
 - **干预实验**（调值立即看变化）：
   - **跳过某层**：该层灰显标"已跳过"，输出概率与原版并排对比
   - **只用前 N 层**：看深度对预测的影响
-  - **注意力温度**：softmax(score/T)，大于 1 更分散、小于 1 更尖锐
+  - **注意力温度**：softmax(score/T)，大于 1 更分散、小于 1 更尖锐；配套温度三联对照图
+    （原样/当前/差值并排）——弧线图看注意力结构，差值图看变化落点，BOS 节点自动标注
+    attention sink 占比
 - **逐头细节**：选定层 x 头的注意力热力图（教学版：人话轴标签 + 红框自动结论 +
   三步读图指南 + 模式图例），滑条拖动即时刷新
 

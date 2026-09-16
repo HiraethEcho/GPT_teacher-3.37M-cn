@@ -342,7 +342,7 @@ def train(
                             print(msg)
                         if patience_counter >= early_stopping_patience:
                             if use_tqdm:
-                                pbar.write("\n=== 早停触发 (step {step}) ===")
+                                pbar.write(f"\n=== 早停触发 (step {step}) ===")
                                 pbar.write(f"最佳验证损失: {best_val_loss:.4f} (step {best_step})")
                                 pbar.write(f"总训练时间: {elapsed:.1f}s")
                             else:

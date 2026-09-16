@@ -215,6 +215,7 @@ def train_kd(args: argparse.Namespace) -> None:
     step = 0
     accum = 0
     start = time.time()
+    early_stop_triggered = False
 
     while step < args.max_steps:
         for xb, yb in train_loader:
@@ -280,9 +281,10 @@ def train_kd(args: argparse.Namespace) -> None:
                         print(f"  → 未改善 ({patience}/{max_patience})")
                         if patience >= max_patience:
                             print(f"早停 (step {step})")
+                            early_stop_triggered = True
                             break
 
-            if step >= args.max_steps:
+            if step >= args.max_steps or early_stop_triggered:
                 break
 
     elapsed = time.time() - start
